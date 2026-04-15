@@ -1,157 +1,108 @@
 import time
 import requests
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
+from bs4 import BeautifulSoup
+import os
 
-# 🔑 Telegram
-BOT_TOKEN = "8728734920:AAHnOupiBs2EWLqHrftSYm4ExZaZNa2s6Yc"
-CHAT_ID = "777274337"
+# =============================
+# 🔑 TELEGRAM CONFIG FROM RENDER
+# =============================
+BOT_TOKEN = os.getenv("8728734920:AAHnOupiBs2EWLqHrftSYm4ExZaZNa2s6Yc")
+CHAT_ID = os.getenv("777274337")
 
-BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    data = {
+        "chat_id": CHAT_ID,
+        "text": msg
+    }
+    try:
+        requests.post(url, data=data)
+    except:
+        pass
 
-# Store matches dynamically
-MATCHES = []
+# =============================
+# 📊 MATCH CONFIG
+# =============================
+MATCHES = [
+    {
+        "name": "RCB vs LSG",
+        "url": "https://crex.com/cricket-live-score/lsg-vs-rcb-23rd-match-indian-premier-league-2026-match-updates-1184"
+    }
+]
 
 last_data = {}
 
-def send(msg):
-    requests.post(f"{BASE_URL}/sendMessage", data={
-        "chat_id": CHAT_ID,
-        "text": msg
-    })
-
-# 🔥 Get Telegram messages
-def get_updates(offset=None):
-    url = f"{BASE_URL}/getUpdates"
-    params = {"timeout": 100, "offset": offset}
-    res = requests.get(url, params=params)
-    return res.json()
-
-# 🎯 Handle commands
-def handle_message(text):
-    global MATCHES
-
-    if text.startswith("/add"):
-        try:
-            url = text.split(" ")[1]
-
-            match = {
-                "name": url.split("/")[-1],
-                "url": url
-            }
-
-            MATCHES.append(match)
-            send(f"✅ Added match: {match['name']}")
-
-        except:
-            send("❌ Use: /add <link>")
-
-    elif text.startswith("/list"):
-        if not MATCHES:
-            send("📭 No matches added")
-        else:
-            msg = "📋 Active Matches:\n"
-            for m in MATCHES:
-                msg += f"- {m['name']}\n"
-            send(msg)
-
-    elif text.startswith("/remove"):
-        name = text.replace("/remove ", "")
-        MATCHES = [m for m in MATCHES if m["name"] != name]
-        send(f"❌ Removed: {name}")
-
-# ⚙️ Chrome setup
-options = Options()
-options.add_argument("--headless")
-options.add_argument("--no-sandbox")
-options.add_argument("--disable-dev-shm-usage")
-
-driver = webdriver.Chrome(options=options)
-
-print("🚀 Dynamic Bot Started...")
-
-last_update_id = None
-
-while True:
+# =============================
+# 🧠 FETCH ODDS
+# =============================
+def get_odds(url):
     try:
-        # 📩 Read Telegram messages
-        updates = get_updates(last_update_id)
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, "html.parser")
 
-        for u in updates["result"]:
-            last_update_id = u["update_id"] + 1
+        values = []
 
-            if "message" in u:
-                text = u["message"].get("text", "")
-                handle_message(text)
+        for div in soup.find_all("div"):
+            txt = div.text.strip()
 
-        # 🔍 Process matches
-        for match in MATCHES:
-            driver.get(match["url"])
-            time.sleep(6)
+            if txt.isdigit():
+                num = int(txt)
+                if 1 <= num <= 120:
+                    values.append(num)
 
-            elements = driver.find_elements(By.XPATH, "//div")
+        values = list(dict.fromkeys(values))
 
-            values = []
-            for e in elements:
-                txt = e.text.strip()
-                if txt.isdigit():
-                    num = int(txt)
-                    if 5 <= num <= 120:
-                        values.append(num)
-
-            values = list(dict.fromkeys(values))
-
-            if len(values) < 2:
-                continue
-
-            team1 = values[0]
-            team2 = values[1]
-
-            # Fav logic
-            if team1 < team2:
-                fav = "Team1"
-                back = team1
-                lay = team2
-            else:
-                fav = "Team2"
-                back = team2
-                lay = team1
-
-            key = match["name"]
-
-            # ENTRY
-            if key not in last_data or last_data[key] != (back, lay):
-
-                msg = f"""📢 MATCH ALERT
-
-🏏 {key}
-📢 Fav: {fav}
-
-💙 Back: {back}
-💗 Lay: {lay}
-"""
-                send(msg)
-
-                if lay <= 5:
-                    send("🔥 EXTREME ENTRY")
-                elif lay <= 10:
-                    send("🚨 HIGH ENTRY")
-                elif lay <= 20:
-                    send("⚡ STRONG ENTRY")
-                elif lay <= 30:
-                    send("📢 ENTRY ZONE")
-
-            # SHARP MOVE
-            if key in last_data:
-                old_back, old_lay = last_data[key]
-                if abs(lay - old_lay) >= 5:
-                    send(f"⚡ SHARP MOVE\n{old_lay} → {lay}")
-
-            last_data[key] = (back, lay)
-
-        time.sleep(5)
+        if len(values) >= 2:
+            return values[0], values[1]
 
     except Exception as e:
         print("Error:", e)
-        time.sleep(5)
+
+    return None, None
+
+# =============================
+# ⚙️ LOGIC
+# =============================
+def check_matches():
+    global last_data
+
+    for match in MATCHES:
+        name = match["name"]
+        url = match["url"]
+
+        back, lay = get_odds(url)
+
+        if not back or not lay:
+            print("Waiting for data...")
+            continue
+
+        fav = name.split(" vs ")[0] if back < lay else name.split(" vs ")[1]
+
+        print(f"{name} → Back:{back} Lay:{lay}")
+
+        # ENTRY ALERT
+        if lay <= 30:
+            if last_data.get(name) != f"entry_{lay}":
+                msg = f"🔥 ENTRY ALERT\nFav: {fav}\nBack: {back}\nLay: {lay}"
+                send_telegram(msg)
+                last_data[name] = f"entry_{lay}"
+
+        # RATE CHANGE ALERT
+        prev = last_data.get(f"{name}_last")
+
+        if prev:
+            if abs(lay - prev) >= 10:
+                msg = f"⚡ RATE JUMP\n{fav}\nOld: {prev} → New: {lay}"
+                send_telegram(msg)
+
+        last_data[f"{name}_last"] = lay
+
+# =============================
+# 🔁 LOOP
+# =============================
+print("🚀 CREX CLOUD BOT STARTED...")
+
+while True:
+    check_matches()
+    time.sleep(10)
